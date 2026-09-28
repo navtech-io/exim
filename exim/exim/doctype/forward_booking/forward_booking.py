@@ -19,8 +19,9 @@ class ForwardBooking(Document):
 
 	def validate(self):
 		self.calculate_forward_limit()
-		self.calculate_cancellation()
-		self.set_status()
+		cancellation_data = self.calculate_cancellation()
+		total_utilization = self.calculate_total_utilization()
+		self.set_status(total_utilization, cancellation_data["total_cancelled"])
 		# self.calculate_days_of_premium()
 		if self.docstatus != 0:
 			self.db_update()
