@@ -122,31 +122,63 @@ class PreShipment(Document):
 
 		self.db_set('status', status)
 
+	def get_account_currency_and_rate(self, account, company_currency):
+		"""Return (account_currency, exchange_rate, amount_in_account_currency)
+		for posting self.loan_amount_inr against `account`, whichever
+		currency that account actually is - the company currency, the
+		loan's own credit_currency, or (rarely) something else entirely.
+		Never assume an account's currency from the loan's own fields:
+		Frappe's own Journal Entry validation always re-derives a row's
+		real account_currency from the Account master and silently
+		corrects/recalculates debit or credit to match it, so a caller
+		that guesses wrong ends up with an unbalanced entry instead of
+		an error pointing at the real cause."""
+		account_currency = frappe.get_cached_value(
+			"Account", account, "account_currency"
+		) or company_currency
+
+		if account_currency == company_currency:
+			return account_currency, 1, self.loan_amount_inr
+
+		if account_currency == self.credit_currency:
+			return account_currency, self.source_exchange_rate, self.loan_amount
+
+		rate = get_exchange_rate(account_currency, company_currency, self.posting_date)
+		amount = flt(self.loan_amount_inr / rate) if rate else self.loan_amount_inr
+		return account_currency, rate, amount
+
 	def create_jv(self):
 		jv = frappe.new_doc("Journal Entry")
-		
+
 		jv.voucher_type = "Bank Entry"
 		jv.posting_date = self.posting_date
 		jv.company = self.company
 
-		loan_amount = self.loan_amount_inr
+		company_currency = frappe.get_cached_value("Company", self.company, "default_currency")
 
-		if self.credit_currency != "INR":
+		loan_currency, loan_rate, loan_amount = self.get_account_currency_and_rate(
+			self.loan_account, company_currency
+		)
+		credit_currency, credit_rate, credit_amount = self.get_account_currency_and_rate(
+			self.loan_credit_account, company_currency
+		)
+
+		if loan_currency != company_currency or credit_currency != company_currency:
 			jv.multi_currency = 1
-			loan_amount = self.loan_amount
 
 		jv.append('accounts', {
 			'account': self.loan_account,
-			'account_currency': self.credit_currency,
-			'exchange_rate': self.source_exchange_rate,
+			'account_currency': loan_currency,
+			'exchange_rate': loan_rate,
 			'credit_in_account_currency': loan_amount,
 			'credit': self.loan_amount_inr,
 		})
 
 		jv.append('accounts', {
 			'account': self.loan_credit_account,
-			'exchange_rate': self.source_exchange_rate,
-			'debit_in_account_currency': self.loan_amount_inr,
+			'account_currency': credit_currency,
+			'exchange_rate': credit_rate,
+			'debit_in_account_currency': credit_amount,
 			'debit': self.loan_amount_inr,
 		})
 
