@@ -130,7 +130,7 @@ class PostShipment(Document):
 	def create_jv(self):
 		jv = frappe.new_doc("Journal Entry")
 		
-		jv.voucher_type = "Bank Entry"
+		jv.voucher_type = "Journal Entry"
 		jv.posting_date = self.posting_date
 		jv.company = self.company
 		jv.multi_currency = 1
