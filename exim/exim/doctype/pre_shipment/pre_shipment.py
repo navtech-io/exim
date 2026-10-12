@@ -150,7 +150,7 @@ class PreShipment(Document):
 	def create_jv(self):
 		jv = frappe.new_doc("Journal Entry")
 
-		jv.voucher_type = "Bank Entry"
+		jv.voucher_type = "Receipt Voucher"
 		jv.posting_date = self.posting_date
 		jv.company = self.company
 
