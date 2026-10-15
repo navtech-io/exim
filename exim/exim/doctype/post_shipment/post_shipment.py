@@ -76,10 +76,12 @@ class PostShipment(Document):
 
 			if weighted_average_rate:
 				self.source_exchange_rate = weighted_average_rate
-				
+
 		elif self.credit_currency and not self.source_exchange_rate:
 			self.source_exchange_rate = get_exchange_rate(self.credit_currency, "INR", self.posting_date)
-		if self.underline_currency == self.credit_currency:
+
+		company_currency = frappe.get_cached_value("Company", self.company, "default_currency")
+		if self.credit_currency == company_currency:
 			self.source_exchange_rate = 1
 
 	def calculate_loan_amount(self):
@@ -127,9 +129,27 @@ class PostShipment(Document):
 		elif not self.bank_loan_reference:
 			frappe.throw(_("Please set Bank Loan Reference"))
 
+	def get_account_currency_and_rate(
+		self, account, company_currency, foreign_currency, foreign_amount, foreign_rate, amount_inr
+	):
+		"""Resolve `account`'s real currency instead of assuming it - Frappe silently recalculates debit/credit to match the Account master, so guessing wrong unbalances the entry."""
+		account_currency = frappe.get_cached_value(
+			"Account", account, "account_currency"
+		) or company_currency
+
+		if account_currency == company_currency:
+			return account_currency, 1, amount_inr
+
+		if account_currency == foreign_currency:
+			return account_currency, foreign_rate, foreign_amount
+
+		rate = get_exchange_rate(account_currency, company_currency, self.posting_date)
+		amount = flt(amount_inr / rate) if rate else amount_inr
+		return account_currency, rate, amount
+
 	def create_jv(self):
 		jv = frappe.new_doc("Journal Entry")
-		
+
 		jv.voucher_type = "Journal Entry"
 		jv.posting_date = self.posting_date
 		jv.company = self.company
@@ -138,22 +158,31 @@ class PostShipment(Document):
 		if self.credit_currency == "INR":
 			jv.multi_currency = 0
 
+		company_currency = frappe.get_cached_value("Company", self.company, "default_currency")
+
 		repayment_amount = 0
 
 		for d in self.get('repayments'):
+			loan_currency, loan_rate, loan_amount = self.get_account_currency_and_rate(
+				self.loan_account, company_currency, d.currency, d.repayment_amount, d.exchange_rate, d.repayment_amount_inr
+			)
+			source_currency, source_rate, source_amount = self.get_account_currency_and_rate(
+				d.loan_account, company_currency, d.currency, d.repayment_amount, d.exchange_rate, d.repayment_amount_inr
+			)
+
 			jv.append('accounts', {
 				'account': self.loan_account,
-				'account_currency': self.credit_currency,
-				'exchange_rate': d.exchange_rate,
-				'credit_in_account_currency': d.repayment_amount,
+				'account_currency': loan_currency,
+				'exchange_rate': loan_rate,
+				'credit_in_account_currency': loan_amount,
 				'credit': d.repayment_amount_inr,
 			})
 
 			jv.append('accounts', {
 				'account': d.loan_account,
-				'account_currency': d.currency,
-				'exchange_rate': d.exchange_rate,
-				'debit_in_account_currency': d.repayment_amount,
+				'account_currency': source_currency,
+				'exchange_rate': source_rate,
+				'debit_in_account_currency': source_amount,
 				'debit': d.repayment_amount_inr,
 			})
 
@@ -163,20 +192,27 @@ class PostShipment(Document):
 
 		if diff_amount > 0:
 			diff_amount_inr = flt(self.source_exchange_rate) * flt(diff_amount)
-			
+
+			loan_currency, loan_rate, loan_amount = self.get_account_currency_and_rate(
+				self.loan_account, company_currency, self.credit_currency, diff_amount, self.source_exchange_rate, diff_amount_inr
+			)
+			credit_currency, credit_rate, credit_amount = self.get_account_currency_and_rate(
+				self.loan_credit_account, company_currency, self.credit_currency, diff_amount, self.source_exchange_rate, diff_amount_inr
+			)
+
 			jv.append('accounts', {
 				'account': self.loan_account,
-				'account_currency': self.credit_currency,
-				'exchange_rate': self.source_exchange_rate,
-				'credit_in_account_currency': diff_amount,
+				'account_currency': loan_currency,
+				'exchange_rate': loan_rate,
+				'credit_in_account_currency': loan_amount,
 				'credit': diff_amount_inr,
 			})
 
 			jv.append('accounts', {
 				'account': self.loan_credit_account,
-				'account_currency': "INR",
-				'exchange_rate': 1,
-				'debit_in_account_currency': diff_amount_inr,
+				'account_currency': credit_currency,
+				'exchange_rate': credit_rate,
+				'debit_in_account_currency': credit_amount,
 				'debit': diff_amount_inr,
 			})
 
